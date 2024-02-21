@@ -255,11 +255,11 @@ class ActorSpace:
         ad = None
         mode_list = mode.split('_')
         if 'sync' in mode_list:
-            ad = SyncActor(value, name)
+            ad = SyncActor(name, value)
         elif 'async' in mode_list:
-            ad = AsyncActor(value, name)
+            ad = AsyncActor(name, value)
         elif 'multi' in mode_list:
-            ad = MultiActor(value, name)
+            ad = MultiActor(name, value)
         if not ad:
             raise Exception('actor definition mode error')
         self.set_value_local(name, ad)
@@ -274,7 +274,7 @@ class ActorSpace:
         actor = self.get_value(name)
         if not actor: raise Exception(f'actor({name}) not found')
         mode_list = mode.split('_')
-        at = None
+        tran = None
         args = list(args)
         if 'sync' in mode_list: # synchronous call
             tran = TransactionType.SYNC
@@ -283,10 +283,14 @@ class ActorSpace:
             tran = TransactionType.ASYNC
             mode_list.remove('async')
             callback = args.pop(0)
+        elif 'multi' in mode_list:
+            tran = TransactionType.MULTI_ASYNC
+            mode_list.remove('multi')
+            callback = args.pop(0)
         elif 'iterator' in mode_list:
-            tran = TransactionType.ITERATOR,
+            tran = TransactionType.ITERATOR
             mode_list.remove('iterator')
-        if not at:
+        if not tran:
             raise Exception('actor run mode error')
         timed = None
         for m in mode_list:
@@ -315,15 +319,15 @@ class SubSystem(ActorSpace):
         super().__init__()
     
     def register_action(self, name, msg_type, topic):
-        aa = ActionActor(name, msg_type, topic)
+        aa = ActionActor(self, name, msg_type, topic)
         self.set_value_local(name, aa)
         
     def register_subscriber(self, name, msg_type, topic, qos):
-        sa = SubscriberActor(name, msg_type, topic, qos)
+        sa = SubscriberActor(self, name, msg_type, topic, qos)
         self.set_value_local(name, sa)   
     
     def register_publisher(self, name, msg_type, topic, qos=10):
-        pa = PublisherActor(name, msg_type, topic, qos)
+        pa = PublisherActor(self, name, msg_type, topic, qos)
         self.set_value_local(name, pa)   
     
     def add_subsystem(self, name, cls):
@@ -416,6 +420,7 @@ class SyncActor(ActorBase):
             self.close(tran)
             return ret
         else:
+            global num_task
             event = Event()
             ret = None
             def stub(): 
@@ -463,16 +468,17 @@ class AsyncActor(ActorBase):
         definition for regular asynchronous actors which requires callback function at completion
     '''
     def sync_run(self, tran):
+        global num_task
         event = Event()
         ret = None
-        def stub(): 
+        def stub(local_ret): 
             global num_task
-            nonlocal ret                   
-            ret = self.impl(*tran.args, **tran.keys)
+            nonlocal ret
+            ret = local_ret
             event.set()
             num_task -= 1
         if num_task >= max_task: raise Exception('insufficient threads')
-        actor_executor.create_task(stub)
+        actor_executor.create_task(lambda : self.impl(stub, *tran.args, **tran.keys))
         num_task += 1
         event.wait()
         self.close(tran)
@@ -499,8 +505,8 @@ class MultiActorIterator:
         tran.actor.impl(self.callback, *tran.args, **tran.keys)
         self.tran = tran
         self.open = True
-        tran.close = self._close
-        tran.abort = self._close
+        tran.close = self.close
+        tran.abort = self.close
     
     def callback(self, future):
         self.rets.append(future)
@@ -511,7 +517,7 @@ class MultiActorIterator:
         return self
     
     def __exit__(self, *args):
-        self.close()
+        self._close()
         
     def __iter__(self):
         return self
@@ -523,7 +529,7 @@ class MultiActorIterator:
         else:
             raise StopIteration()
     
-    def close(self):
+    def close(self, tran):
         self._close()
         
     def _close(self):
@@ -552,8 +558,9 @@ class SubscriberActor(MultiActor):
     '''
         emulates a multi mode actor using ROS subscriber
     '''
-    def __init__(self, name, msg_type, topic, qos):
-        actor_node = self.get_value('node')
+    def __init__(self, env, name, msg_type, topic, qos):
+        self.env = env
+        actor_node = env.get_value('node')
         actor_node.create_subscription(msg_type, topic, self.callback, qos)
         self.callbacks = []
         self.topic = topic
@@ -576,8 +583,9 @@ class PublisherActor(SyncActor):
     '''
         emulates synchronous mode actor using ROS publisher
     '''
-    def __init__(self, name, msg_type, topic, qos=10):
-        node = self.get_value('node')
+    def __init__(self, env, name, msg_type, topic, qos=10):
+        self.env = env
+        node = env.get_value('node')
         pub = node.create_publisher(msg_type, topic, qos)
         super().__init__(name, lambda msg: pub.publish(msg))
 
@@ -586,8 +594,9 @@ class ActionActor(AsyncActor):
     '''
         emulates asynchronous mode actor using ROS action client
     '''
-    def __init__(self, name, msg_type, topic):
-        node = self.get_value('node')
+    def __init__(self, env, name, msg_type, topic):
+        self.env = env
+        node = env.get_value('node')
         ac = ActionClient(node, msg_type, topic)
         
         def stub(callback, goal):
@@ -646,6 +655,7 @@ def actor_watchdog():
     for t in active_tran:
         if not t.is_timed: continue
         elasp = now - t.start
+        print(f'elsp:{elasp}, timeout]{t.time}')
         if elasp >= t.time:
             t.abort(t)
     w_tran += 1
