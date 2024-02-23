@@ -123,7 +123,7 @@ def run_actor_async(name, callback, *l_args, **k_args):
     if not (actor and isinstance(actor, ActorBase)): raise Exception('run_actor type error')
     return actor.run(TransactionType.ASYNC, l_args, k_args, callback=callback, is_extern=True)
 
-def init_spin(node, max_task_param=10):
+def init_spin(node, max_task_param=15):
     '''
         initialize executor spin.  system gets running
         intended to be call backed from initializer of application program.
@@ -509,9 +509,10 @@ class MultiActorIterator:
         tran.abort = self.close
     
     def callback(self, future):
-        self.rets.append(future)
-        self.sem.release()
-        return True
+        if self.open:
+            self.rets.append(future)
+            self.sem.release()
+            return True
     
     def __enter__(self):
         return self
@@ -534,6 +535,7 @@ class MultiActorIterator:
         
     def _close(self):
         self.open = False
+        self.rets = []
         self.sem.release()
         tran = self.tran
         tran.actor.close(tran)
@@ -655,7 +657,6 @@ def actor_watchdog():
     for t in active_tran:
         if not t.is_timed: continue
         elasp = now - t.start
-        print(f'elsp:{elasp}, timeout]{t.time}')
         if elasp >= t.time:
             t.abort(t)
     w_tran += 1
@@ -694,6 +695,7 @@ class BTEngine:
                 node = Node(f'bt_node_{id}')
                 id += 1
                 lib_main.run_internal(self.bt_name, node)
+                node.destroy_node()
             except Exception as e:
                 print(e)
             self.bt_done.set()     
