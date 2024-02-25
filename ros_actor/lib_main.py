@@ -461,6 +461,7 @@ class SyncActor(ActorBase):
         task = actor_executor.create_task(self.sync_async_stub(), tran)
         tran.task = task
         num_task += 1
+        return tran
 
 # regular async actor
 class AsyncActor(ActorBase):
@@ -490,7 +491,15 @@ class AsyncActor(ActorBase):
                 tran.callback(*args, **keys)
                 self.close(tran)
             return callback
-        self.impl(stub(tran), *tran.args, **tran.keys)
+        desc = self.impl(stub(tran), *tran.args, **tran.keys)
+        if desc:
+            for k, v in desc:
+                if k == 'close':
+                    org_close = tran.close
+                    def close_stub(tran):
+                        v(tran)
+                        org_close(tran)
+                    tran.close = close_stub
         return tran
 
 class MultiActorIterator:
@@ -549,7 +558,15 @@ class MultiActor(AsyncActor):
         def stub(*args, **keys):
             if not tran.is_active: return
             tran.callback(*args, **keys)
-        self.impl(stub, *tran.args, **tran.keys)
+        desc = self.impl(stub, *tran.args, **tran.keys)
+        if desc:
+            for k, v in desc:
+                if k == 'close':
+                    org_close = tran.close
+                    def close_stub(tran):
+                        v(tran)
+                        org_close(tran)
+                    tran.close = close_stub
         return tran
     
     def iterator_run(self, tran):
