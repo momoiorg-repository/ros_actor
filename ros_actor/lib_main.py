@@ -14,7 +14,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 
 from pytwb import lib_main
 
-from cm_interfaces.action import ComplexMotion
+from actor_interfaces.action import ComplexMotion
 
 #############################################################
 #   API
