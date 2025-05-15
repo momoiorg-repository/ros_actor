@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-from threading import Thread, Event, Semaphore
+from threading import Thread, Event, Semaphore, Lock
 import time
 import yaml
 import inspect
@@ -381,7 +381,8 @@ class ActorBase:
         tran.abort = abort_stub
         tran.close = close_stub
         tran.start = time.time()
-        active_tran.append(tran)
+        with tran_lock:
+            active_tran.append(tran)
         if tran_type == TransactionType.SYNC:
             return self.sync_run(tran)
         elif tran_type == TransactionType.ASYNC:
@@ -400,13 +401,15 @@ class ActorBase:
     def multi_run(self, tran): raise Exception('illegal transaction type')
     
     def abort(self, tran):
-        if tran in active_tran:
-            active_tran.remove(tran)
+        with tran_lock:
+            if tran in active_tran:
+                active_tran.remove(tran)
         tran.is_active = False
     
     def close(self, tran):
-        if tran in active_tran:
-            active_tran.remove(tran)
+        with tran_lock:
+            if tran in active_tran:
+                active_tran.remove(tran)
         tran.is_active = False
                 
 # regular sync actor
@@ -421,18 +424,18 @@ class SyncActor(ActorBase):
             return ret
         else:
             global num_task
-            event = Event()
+            sem = Semaphore(0)
             ret = None
             def stub(): 
                 global num_task
                 nonlocal ret                   
                 ret = self.impl(*tran.args, **tran.keys)
-                event.set()
+                sem.release()
                 num_task -= 1
             if num_task >= max_task: raise Exception('insufficient threads')
             actor_executor.create_task(stub)
             num_task += 1
-            event.wait()
+            sem.acquire()
             self.close(tran)
             return ret
    
@@ -470,18 +473,18 @@ class AsyncActor(ActorBase):
     '''
     def sync_run(self, tran):
         global num_task
-        event = Event()
+        sem = Semaphore(0)
         ret = None
         def stub(local_ret): 
             global num_task
             nonlocal ret
             ret = local_ret
-            event.set()
+            sem.release()
             num_task -= 1
         if num_task >= max_task: raise Exception('insufficient threads')
         actor_executor.create_task(lambda : self.impl(stub, *tran.args, **tran.keys))
         num_task += 1
-        event.wait()
+        sem.acquire()
         self.close(tran)
         return ret
     
@@ -582,19 +585,23 @@ class SubscriberActor(MultiActor):
         actor_node = env.get_value('node')
         actor_node.create_subscription(msg_type, topic, self.callback, qos)
         self.callbacks = []
+        self.callback_lock = Lock()
         self.topic = topic
         super().__init__(name, self.request)
         
     def request(self, callback):
-        self.callbacks.append(callback)
+        with self.callback_lock:
+            self.callbacks.append(callback)
     
     def callback(self, res):
-        for c in self.callbacks:
-            c(res)
+        with self.callback_lock:
+            for c in self.callbacks:
+                c(res)
     
     def close(self, tran):
-        if tran.callback in self.callbacks:
-            self.callbacks.remove(tran.callback)
+        with self.callback_lock:
+            if tran.callback in self.callbacks:
+                self.callbacks.remove(tran.callback)
         super().close(tran)
         
 # actor wrapping for publisher
@@ -657,6 +664,7 @@ max_task = 0
 
 # 'ready queue' for actors
 active_tran = []
+tran_lock = Lock()
 
 def dump_tran():
     if verbose <= 0: return
