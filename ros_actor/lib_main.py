@@ -594,9 +594,8 @@ class SubscriberActor(MultiActor):
             self.callbacks.append(callback)
     
     def callback(self, res):
-        with self.callback_lock:
-            for c in self.callbacks:
-                c(res)
+        for c in self.callbacks:
+            c(res)
     
     def close(self, tran):
         with self.callback_lock:
