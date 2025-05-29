@@ -514,16 +514,15 @@ class MultiActorIterator:
         it_tran = tran
         self.rets = []
         self.sem = Semaphore(0)
-        config = tran.actor.impl(self.callback, *tran.args, **tran.keys)
+        ex_arg = tran.actor.impl(self.callback, *tran.args, **tran.keys)
+        if ex_arg is None:
+            self.ex_op = {}
+        else:
+            self.ex_op = dict(ex_arg)
         self.tran = tran
         self.open = True
         tran.close = self.close
         tran.abort = self.close
-        self.ex_close = None
-        if config is not None:
-            for name, op in config:
-                if name == 'close':
-                    self.ex_close = op
     
     def callback(self, future):
         if self.open:
@@ -548,8 +547,8 @@ class MultiActorIterator:
             raise StopIteration()
     
     def close(self, tran):
-        if self.ex_close:
-            self.ex_close(tran)
+        if 'call' in self.ex_op:
+            self.ex_op['call'](tran)
         self._close()
         
     def _close(self):
