@@ -547,8 +547,8 @@ class MultiActorIterator:
             raise StopIteration()
     
     def close(self, tran):
-        if 'call' in self.ex_op:
-            self.ex_op['call'](tran)
+        if 'close' in self.ex_op:
+            self.ex_op['close'](tran)
         self._close()
         
     def _close(self):
